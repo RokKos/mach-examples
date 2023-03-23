@@ -7,12 +7,13 @@ const Primitive = primitives.Primitive;
 const VertexData = primitives.VertexData;
 
 pub const Renderer = @This();
-
-var queue: *gpu.Queue = undefined;
-var pipeline: *gpu.RenderPipeline = undefined;
-var app_timer: mach.Timer = undefined;
-var depth_texture: *gpu.Texture = undefined;
-var depth_texture_view: *gpu.TextureView = undefined;
+primitives_data: [5]PrimitiveRenderData = undefined,
+curr_primitive_index: u4 = 0,
+pipeline: *gpu.RenderPipeline = undefined,
+uniform_buffer: *gpu.Buffer = undefined,
+bind_group: *gpu.BindGroup = undefined,
+depth_texture: *gpu.Texture = undefined,
+depth_texture_view: *gpu.TextureView = undefined,
 
 const PrimitiveRenderData = struct {
     vertex_buffer: *gpu.Buffer,
@@ -24,60 +25,56 @@ const PrimitiveRenderData = struct {
 const UniformBufferObject = struct {
     mvp_matrix: zmath.Mat,
 };
-var uniform_buffer: *gpu.Buffer = undefined;
-var bind_group: *gpu.BindGroup = undefined;
 
-var primitives_data: [5]PrimitiveRenderData = undefined;
-pub var curr_primitive_index: u4 = 0;
+var app_timer: mach.Timer = undefined;
 
-pub fn init(core: *mach.Core, allocator: std.mem.Allocator, timer: mach.Timer) !void {
-    queue = core.device().getQueue();
+pub fn init(self : *Renderer, core: *mach.Core, allocator: std.mem.Allocator, timer: mach.Timer) !void {
     app_timer = timer;
 
     {
         const triangle_primitive = try primitives.createTrianglePrimitive(allocator, 1);
-        primitives_data[0] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, triangle_primitive), .index_buffer = createIndexBuffer(core, triangle_primitive), .vertex_count = triangle_primitive.vertex_count, .index_count = triangle_primitive.index_count };
+        self.primitives_data[0] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, triangle_primitive), .index_buffer = createIndexBuffer(core, triangle_primitive), .vertex_count = triangle_primitive.vertex_count, .index_count = triangle_primitive.index_count };
         defer triangle_primitive.vertex_data.deinit();
         defer triangle_primitive.index_data.deinit();
     }
 
     {
         const quad_primitive = try primitives.createQuadPrimitive(allocator, 1.4);
-        primitives_data[1] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, quad_primitive), .index_buffer = createIndexBuffer(core, quad_primitive), .vertex_count = quad_primitive.vertex_count, .index_count = quad_primitive.index_count };
+        self.primitives_data[1] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, quad_primitive), .index_buffer = createIndexBuffer(core, quad_primitive), .vertex_count = quad_primitive.vertex_count, .index_count = quad_primitive.index_count };
         defer quad_primitive.vertex_data.deinit();
         defer quad_primitive.index_data.deinit();
     }
 
     {
         const plane_primitive = try primitives.createPlanePrimitive(allocator, 1000, 1000, 1.5);
-        primitives_data[2] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, plane_primitive), .index_buffer = createIndexBuffer(core, plane_primitive), .vertex_count = plane_primitive.vertex_count, .index_count = plane_primitive.index_count };
+        self.primitives_data[2] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, plane_primitive), .index_buffer = createIndexBuffer(core, plane_primitive), .vertex_count = plane_primitive.vertex_count, .index_count = plane_primitive.index_count };
         defer plane_primitive.vertex_data.deinit();
         defer plane_primitive.index_data.deinit();
     }
 
     {
         const circle_primitive = try primitives.createCirclePrimitive(allocator, 64, 1);
-        primitives_data[3] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, circle_primitive), .index_buffer = createIndexBuffer(core, circle_primitive), .vertex_count = circle_primitive.vertex_count, .index_count = circle_primitive.index_count };
+        self.primitives_data[3] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, circle_primitive), .index_buffer = createIndexBuffer(core, circle_primitive), .vertex_count = circle_primitive.vertex_count, .index_count = circle_primitive.index_count };
         defer circle_primitive.vertex_data.deinit();
         defer circle_primitive.index_data.deinit();
     }
 
     {
         const cube_primitive = try primitives.createCubePrimitive(allocator, 0.5);
-        primitives_data[4] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, cube_primitive), .index_buffer = createIndexBuffer(core, cube_primitive), .vertex_count = cube_primitive.vertex_count, .index_count = cube_primitive.index_count };
+        self.primitives_data[4] = PrimitiveRenderData{ .vertex_buffer = createVertexBuffer(core, cube_primitive), .index_buffer = createIndexBuffer(core, cube_primitive), .vertex_count = cube_primitive.vertex_count, .index_count = cube_primitive.index_count };
         defer cube_primitive.vertex_data.deinit();
         defer cube_primitive.index_data.deinit();
     }
 
     var bind_group_layout = createBindGroupLayout(core);
-    createBindBuffer(core, bind_group_layout);
+    self.createBindBuffer(core, bind_group_layout);
 
-    createDepthTexture(core);
+    self.createDepthTexture(core);
 
     var shader = core.device().createShaderModuleWGSL("shader.wgsl", @embedFile("shader.wgsl"));
     defer shader.release();
 
-    pipeline = createPipeline(core, shader, bind_group_layout);
+    self.pipeline = createPipeline(core, shader, bind_group_layout);
 }
 
 fn createVertexBuffer(core: *mach.Core, primitive: Primitive) *gpu.Buffer {
@@ -88,6 +85,7 @@ fn createVertexBuffer(core: *mach.Core, primitive: Primitive) *gpu.Buffer {
     };
 
     const vertex_buffer = core.device().createBuffer(&vertex_buffer_descriptor);
+    const queue = core.device().getQueue();
     queue.writeBuffer(vertex_buffer, 0, primitive.vertex_data.items[0..]);
 
     return vertex_buffer;
@@ -100,6 +98,7 @@ fn createIndexBuffer(core: *mach.Core, primitive: Primitive) *gpu.Buffer {
         .mapped_at_creation = false,
     };
     const index_buffer = core.device().createBuffer(&index_buffer_descriptor);
+    const queue = core.device().getQueue();
     queue.writeBuffer(index_buffer, 0, primitive.index_data.items[0..]);
 
     return index_buffer;
@@ -114,31 +113,31 @@ fn createBindGroupLayout(core: *mach.Core) *gpu.BindGroupLayout {
     );
 }
 
-fn createBindBuffer(core: *mach.Core, bind_group_layout: *gpu.BindGroupLayout) void {
-    uniform_buffer = core.device().createBuffer(&.{
+fn createBindBuffer(self : *Renderer, core: *mach.Core, bind_group_layout: *gpu.BindGroupLayout) void {
+    self.uniform_buffer = core.device().createBuffer(&.{
         .usage = .{ .copy_dst = true, .uniform = true },
         .size = @sizeOf(UniformBufferObject),
         .mapped_at_creation = false,
     });
 
-    bind_group = core.device().createBindGroup(
+    self.bind_group = core.device().createBindGroup(
         &gpu.BindGroup.Descriptor.init(.{
             .layout = bind_group_layout,
             .entries = &.{
-                gpu.BindGroup.Entry.buffer(0, uniform_buffer, 0, @sizeOf(UniformBufferObject)),
+                gpu.BindGroup.Entry.buffer(0, self.uniform_buffer, 0, @sizeOf(UniformBufferObject)),
             },
         }),
     );
 }
 
-fn createDepthTexture(core: *mach.Core) void {
-    depth_texture = core.device().createTexture(&gpu.Texture.Descriptor{
+fn createDepthTexture(self : *Renderer,core: *mach.Core) void {
+    self.depth_texture = core.device().createTexture(&gpu.Texture.Descriptor{
         .usage = .{ .render_attachment = true },
         .size = .{ .width = core.descriptor().width, .height = core.descriptor().height },
         .format = .depth24_plus,
     });
 
-    depth_texture_view = depth_texture.createView(&gpu.TextureView.Descriptor{
+    self.depth_texture_view = self.depth_texture.createView(&gpu.TextureView.Descriptor{
         .format = .depth24_plus,
         .dimension = .dimension_2d,
         .array_layer_count = 1,
@@ -216,7 +215,7 @@ fn createPipeline(core: *mach.Core, shader_module: *gpu.ShaderModule, bind_group
 
 pub const F32x1 = @Vector(1, f32);
 
-pub fn update(core: *mach.Core) void {
+pub fn update(self : *Renderer, core: *mach.Core) void {
     const back_buffer_view = core.swapChain().getCurrentTextureView();
     const color_attachment = gpu.RenderPassColorAttachment{
         .view = back_buffer_view,
@@ -226,7 +225,7 @@ pub fn update(core: *mach.Core) void {
     };
 
     const depth_stencil_attachment = gpu.RenderPassDepthStencilAttachment{
-        .view = depth_texture_view,
+        .view = self.depth_texture_view,
         .depth_load_op = .clear,
         .depth_store_op = .store,
         .depth_clear_value = 1.0,
@@ -238,7 +237,7 @@ pub fn update(core: *mach.Core) void {
         .depth_stencil_attachment = &depth_stencil_attachment,
     });
 
-    if (curr_primitive_index >= 4) {
+    if (self.curr_primitive_index >= 4) {
         const time = app_timer.read() / 5;
         const model = zmath.mul(zmath.rotationX(time * (std.math.pi / 2.0)), zmath.rotationZ(time * (std.math.pi / 2.0)));
         const view = zmath.lookAtRh(
@@ -258,26 +257,26 @@ pub fn update(core: *mach.Core) void {
         const ubo = UniformBufferObject{
             .mvp_matrix = zmath.transpose(mvp),
         };
-        encoder.writeBuffer(uniform_buffer, 0, &[_]UniformBufferObject{ubo});
+        encoder.writeBuffer(self.uniform_buffer, 0, &[_]UniformBufferObject{ubo});
     } else {
         const ubo = UniformBufferObject{
             .mvp_matrix = zmath.identity(),
         };
-        encoder.writeBuffer(uniform_buffer, 0, &[_]UniformBufferObject{ubo});
+        encoder.writeBuffer(self.uniform_buffer, 0, &[_]UniformBufferObject{ubo});
     }
 
     const pass = encoder.beginRenderPass(&render_pass_info);
 
-    pass.setPipeline(pipeline);
+    pass.setPipeline(self.pipeline);
 
-    const vertex_buffer = primitives_data[curr_primitive_index].vertex_buffer;
-    const vertex_count = primitives_data[curr_primitive_index].vertex_count;
+    const vertex_buffer = self.primitives_data[self.curr_primitive_index].vertex_buffer;
+    const vertex_count = self.primitives_data[self.curr_primitive_index].vertex_count;
     pass.setVertexBuffer(0, vertex_buffer, 0, @sizeOf(VertexData) * vertex_count);
 
-    pass.setBindGroup(0, bind_group, &.{0});
+    pass.setBindGroup(0, self.bind_group, &.{0});
 
-    const index_buffer = primitives_data[curr_primitive_index].index_buffer;
-    const index_count = primitives_data[curr_primitive_index].index_count;
+    const index_buffer = self.primitives_data[self.curr_primitive_index].index_buffer;
+    const index_count = self.primitives_data[self.curr_primitive_index].index_count;
     pass.setIndexBuffer(index_buffer, .uint32, 0, @sizeOf(u32) * index_count);
     pass.drawIndexed(index_count, 1, 0, 0, 0);
 
@@ -287,20 +286,21 @@ pub fn update(core: *mach.Core) void {
     var command = encoder.finish(null);
     encoder.release();
 
+    const queue = core.device().getQueue();
     queue.submit(&[_]*gpu.CommandBuffer{command});
     command.release();
     core.swapChain().present();
     back_buffer_view.release();
 }
 
-pub fn deinit() void {
+pub fn deinit(self : *Renderer) void {
     var i: u4 = 0;
     while (i < 4) : (i += 1) {
-        primitives_data[i].vertex_buffer.release();
-        primitives_data[i].index_buffer.release();
+        self.primitives_data[i].vertex_buffer.release();
+        self.primitives_data[i].index_buffer.release();
     }
 
-    bind_group.release();
-    depth_texture.release();
-    depth_texture_view.release();
+    self.bind_group.release();
+    self.depth_texture.release();
+    self.depth_texture_view.release();
 }

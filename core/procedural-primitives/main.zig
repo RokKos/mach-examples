@@ -1,10 +1,11 @@
 const std = @import("std");
 const mach = @import("mach");
 const gpu = mach.gpu;
-const renderer = @import("renderer.zig");
+const Renderer = @import("renderer.zig").Renderer;
 
 pub const App = @This();
 core: mach.Core,
+renderer : Renderer,
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -20,13 +21,14 @@ pub fn init(app: *App) !void {
 
     const timer = try mach.Timer.start();
 
-    try renderer.init(&app.core, allocator, timer);
+    try app.renderer.init(&app.core, allocator, timer);
+    app.renderer.curr_primitive_index = 0;
 }
 
 pub fn deinit(app: *App) void {
     defer _ = gpa.deinit();
     defer app.core.deinit();
-    defer renderer.deinit();
+    defer app.renderer.deinit();
 }
 
 pub fn update(app: *App) !bool {
@@ -37,8 +39,8 @@ pub fn update(app: *App) !bool {
                 if (ev.key == .space) return true;
                 // TODO(Rok Kos): Improve this, maybe even make ImGui for this
                 if (ev.key == .right) {
-                    renderer.curr_primitive_index += 1;
-                    renderer.curr_primitive_index %= 5;
+                    app.renderer.curr_primitive_index += 1;
+                    app.renderer.curr_primitive_index %= @as(u4,app.renderer.primitives_data.len);
                 }
             },
             .close => return true,
@@ -46,7 +48,7 @@ pub fn update(app: *App) !bool {
         }
     }
 
-    renderer.update(&app.core);
+    app.renderer.update(&app.core);
 
     return false;
 }
